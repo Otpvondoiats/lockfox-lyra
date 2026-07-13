@@ -1,0 +1,51 @@
+2022/11/30 v1.11:
+1.fix adb on linux sdk without root command bug
+2.fix read io on wrong address stall bug
+3.fix app can still alive after close bug 
+
+2022/11/11 v1.1:
+1.support search function on pin page search
+2.add adb root and io check
+3.move print info into output panel on gpio page
+4.add gpio io command search
+5.support encrypted json data 
+
+2022/03/23:
+1.add gpio4c0 and gpio4c1 pull ds data
+
+2022/03/22:
+1.add RV1106 support
+
+2022/02/16:
+1.support to export gpio settings into xls
+
+2021/11/12:
+1.fix io read bug by adb
+2.fix read regulator-summary bug
+3.fix read vsel bug on 1126 
+
+2021/11/11:
+1.support to set iomux in pin page by double click function
+
+2021/11/10:
+1.support to printf iomux command without device connection
+
+2021/11/08:
+1.achieve read/write/check gpio by openocd
+
+2021/11/02:
+1.initial release version
+2.read/write/check gpio by adb
+
+
+
+
+
+
+
+
+
+
+
+
+

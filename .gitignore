@@ -1,0 +1,30 @@
+# ---- Build output directories (Rockchip/Luckfox SDK) ----
+/output/
+/rockdev/
+buildroot/output/
+buildroot/dl/
+buildroot/ccache/
+rtos/output/
+u-boot/build/
+
+# ---- Compiled objects / build intermediates ----
+# NOTE: do NOT use blanket *.bin / *.img here — rkbin/ ships required
+# firmware blobs (loader/bl31/*.bin) that MUST stay tracked.
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.d
+.tmp_versions/
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Editor / OS noise ----
+*.swp
+*~
+.DS_Store
+
+# ---- Local build logs ----
+*.log

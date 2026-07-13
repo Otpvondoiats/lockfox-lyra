@@ -17,6 +17,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# NOTE: use the chip:<chip>:<defconfig> form, not just <defconfig>.
+# On a fresh clone the device/rockchip/.chip symlink does not exist yet
+# (it is gitignored and created at lunch time). './build.sh <defconfig>'
+# goes straight to choose_defconfig which cd's into the missing .chip and
+# fails with "No available defconfigs". The chip: form runs choose_chip
+# first, which creates the .chip symlink, then selects the defconfig.
+CHIP="rk3506"
 DEFCONFIG="rk3506b_buildroot_spinand_amp_nuttx_defconfig"
 NUTTX_CONFIG="luckfox-lyra-amp:nsh"
 
@@ -39,8 +46,8 @@ log "3/5 restore split buildroot/dl tarballs"
 "$ROOT/tools/restore-dl-splits.sh"
 
 # --- 4. select board config (non-interactive) -------------------------------
-log "4/5 lunch $DEFCONFIG"
-./build.sh "$DEFCONFIG"
+log "4/5 lunch $CHIP:$DEFCONFIG"
+./build.sh "chip:$CHIP:$DEFCONFIG"
 
 # --- 5. full build ----------------------------------------------------------
 log "5/5 build all (u-boot + kernel + rootfs + NuttX amp)"

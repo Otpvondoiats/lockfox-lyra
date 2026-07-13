@@ -17,8 +17,13 @@ cd lockfox-lyra
 1. `git submodule update --init nuttxos/nuttx nuttxos/nuttx-apps`
 2. `git am nuttxos/patches/*.patch`（应用 NuttX RK3506 CPU2 移植）
 3. `tools/restore-dl-splits.sh`（把 `buildroot/dl` 里的分卷重组还原，sha256 校验）
-4. `./build.sh rk3506b_buildroot_spinand_amp_nuttx_defconfig`（选板）
+4. `./build.sh chip:rk3506:rk3506b_buildroot_spinand_amp_nuttx_defconfig`（选板）
 5. `./build.sh`（编 u-boot + kernel + rootfs + NuttX amp 并打包）
+
+> 注意第 4 步必须用 `chip:rk3506:<defconfig>` 形式，不能只写 `<defconfig>`。
+> 全新 clone 时 `device/rockchip/.chip` 符号链接还不存在（它被 gitignore、
+> 由首次选型时创建），直接 `./build.sh <defconfig>` 会因找不到 `.chip` 而报
+> `No available defconfigs`。`chip:` 形式会先创建 `.chip` 再选 defconfig。
 
 产物在 `output/firmware/`：`MiniLoaderAll.bin` / `uboot.img` / `boot.img` /
 `rootfs.img` / `parameter.txt`，以及 amp 分区镜像 `output/firmware/amp.img`
@@ -30,7 +35,7 @@ cd lockfox-lyra
 git submodule update --init nuttxos/nuttx nuttxos/nuttx-apps
 ( cd nuttxos/nuttx && git am ../patches/*.patch )
 ./tools/restore-dl-splits.sh
-./build.sh rk3506b_buildroot_spinand_amp_nuttx_defconfig
+./build.sh chip:rk3506:rk3506b_buildroot_spinand_amp_nuttx_defconfig
 ./build.sh
 ```
 
@@ -81,3 +86,15 @@ GitHub 单文件上限 100MB。`buildroot/dl` 中超限的文件（当前仅
 
 `tools/restore-dl-splits.sh` 用 `cat` 重组并校验 sha256，还原字节完全一致，
 所以 buildroot 自身的包哈希校验会通过、不会触发重新下载。
+
+## 全新 clone 端到端验证记录（2026-07-13）
+
+在空目录里 `git clone` → 按上面流程走了一遍，发现并修复了 3 个可复现性问题：
+
+| # | 现象 | 根因 | 修复 |
+|---|------|------|------|
+| 1 | `./build.sh <defconfig>` 报 `No available defconfigs` | 全新 clone 无 `device/rockchip/.chip` 符号链接（gitignore，首次选型时才建），`switch_defconfig` 进不去 | 文档/脚本改用 `./build.sh chip:rk3506:<defconfig>`（先建 `.chip` 再选） |
+| 2 | rootfs 构建失败：`ifupdown-scripts/network` 目录缺失 | 见 #3 | 随 #3 一并修复 |
+| 3 | **根因**：根 `.gitignore` 的 `*.d` / `*.cmd` / `*.ko` 全局规则误伤 buildroot **源码**（`if-up.d`/`init.d`/`rules.d`/`weston.ini.d` 等 77 个文件，含关键的 `package/initscripts/init.d/rcS`、`rcK`），import 时就没进 git | `git add -f` 强制纳入这 77 个文件（已跟踪文件不再受 gitignore 影响；未改宽泛规则以免误收构建产物） |
+
+已验证通过的环节：clone / submodule init / `git am` 打 4 个 patch / dl 分卷还原（sha256 通过）/ u-boot 构建 / kernel 构建（33MB 保留区 dtb 生效）。#3 修复后重新 clone 即可让 rootfs 阶段拿到完整源码。

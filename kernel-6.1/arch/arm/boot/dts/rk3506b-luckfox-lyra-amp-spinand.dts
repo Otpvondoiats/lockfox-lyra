@@ -134,8 +134,29 @@
 
 /**********Amp**********/
 &reserved_memory {
+	/* NuttX AMP secondary (CPU2) reserved region.
+	 * Sized to cover the full NuttX footprint so Linux never treats any
+	 * of it as free System RAM:
+	 *   code  0x03e00000 - 0x03f00000  (1MB,  CONFIG_FLASH_*)
+	 *   RAM   0x03f00000 - 0x05f00000  (32MB, CONFIG_RAM_SIZE=0x02000000)
+	 * Total range: 0x03e00000 - 0x05f00000 = 0x02100000 (33MB).
+	 * Load address 0x03e00000 unchanged, so ITS / U-Boot psci_cpu_on need
+	 * no edit.
+	 *
+	 * ==== NuttX RAM upper limit (the NuttX source lives in an external
+	 *      repo, so the constraint is documented here) ====
+	 * The NuttX RK3506 port maps a fixed 256MB DDR window in its MMU setup
+	 * (RK3506_DDR_SECSIZE = 256MB, VA/PA 0x00000000-0x10000000). NuttX RAM
+	 * starts at CONFIG_RAM_START = 0x03f00000, so its end must stay within
+	 * that window:
+	 *   CONFIG_RAM_SIZE <= 0x10000000 - 0x03f00000 = 0x0C100000 (193MB).
+	 * Going past 0x10000000 lands in an unmapped region -> data abort on
+	 * first access. Whenever CONFIG_RAM_SIZE changes, this amp_reserved
+	 * "reg" length MUST be updated to code(1MB) + CONFIG_RAM_SIZE, or Linux
+	 * will reclaim the overflow as free RAM and corrupt NuttX.
+	 */
 	amp_reserved: amp@3e00000 {
-		reg = <0x03e00000 0x100000>;
+		reg = <0x03e00000 0x2100000>;
 		no-map;
 	};
 };

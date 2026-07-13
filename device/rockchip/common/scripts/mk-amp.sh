@@ -142,6 +142,61 @@ build_rtthread()
 	finish_build build_rtthread $@
 }
 
+# build_nuttx <cpu> <out_bin_basename> <nuttx_config>
+#   <cpu>              : target mpidr low byte (informational)
+#   <out_bin_basename> : basename of the ITS 'data' (e.g. nuttx -> nuttx.bin)
+#   <nuttx_config>     : NuttX board:config passed to tools/configure.sh,
+#                        e.g. "luckfox-lyra-amp:nsh"
+#
+# Builds Apache NuttX (the AMP secondary that replaces RT-Thread on CPU2)
+# from $RK_SDK_DIR/nuttxos/nuttx and links nuttx.bin into $RK_OUTDIR so the
+# amp.its /incbin can find it. NuttX selects its own bare-metal toolchain
+# (CONFIG_ARM_TOOLCHAIN_GNU_EABI -> arm-none-eabi-) via Kconfig, so we must
+# NOT force the Linux/RTT CROSS_COMPILE (arm-none-linux-gnueabihf-) onto it.
+build_nuttx()
+{
+	local cpu="$1" binname="$2" config="$3"
+	local nuttx_dir="$RK_SDK_DIR/nuttxos/nuttx"
+
+	message "=========================================="
+	message "  Building CPU $cpu: NuttX-->$binname"
+	message "                  Config-->$config"
+	message "=========================================="
+
+	if [ ! -x "$nuttx_dir/tools/configure.sh" ]; then
+		warning "NuttX source not found at $nuttx_dir\n"
+		warning "nuttxos/nuttx is a submodule; run 'git submodule update --init'\n"
+		return 1
+	fi
+
+	# Build NuttX in a subshell so its toolchain env does not leak back into
+	# the RT-Thread/HAL/mkimage steps.
+	(
+		unset CROSS_COMPILE
+		cd "$nuttx_dir"
+
+		# Reconfigure only if the requested config is not the current one
+		# (configure.sh needs a distclean when switching boards).
+		if [ -n "$config" ]; then
+			if ! grep -q "\"${config##*:}\"" .config 2>/dev/null; then
+				make distclean >/dev/null 2>&1 || true
+				./tools/configure.sh -e "$config"
+			fi
+		fi
+
+		make -j$(nproc) > "${RK_SDK_DIR}/nuttx.log" 2>&1
+	)
+
+	if [ ! -f "$nuttx_dir/nuttx.bin" ]; then
+		error "NuttX build failed, see ${RK_SDK_DIR}/nuttx.log"
+		return 1
+	fi
+
+	ln -rsf "$nuttx_dir/nuttx.bin" "$RK_OUTDIR/$binname.bin"
+
+	finish_build build_nuttx $@
+}
+
 clean_hook()
 {
 	[ "$RK_AMP" ] || return 0
@@ -212,6 +267,11 @@ build_images()
 				build_rtthread RK_AMP_RTT_TARGET $CUR_CPU \
 					       "$(basename -s .bin $CPU_BIN)" \
 					       "$(amp_get_string "$ITS_IMAGE" rtt_config)" \
+				;;
+			nuttx|nuttx_ap)
+				build_nuttx $CUR_CPU \
+					    "$(basename -s .bin $CPU_BIN)" \
+					    "$(amp_get_string "$ITS_IMAGE" nuttx_config)"
 				;;
 			*)
 				break;;

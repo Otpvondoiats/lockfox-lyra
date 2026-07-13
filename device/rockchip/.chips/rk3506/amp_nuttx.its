@@ -1,0 +1,77 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+/*
+ * Copyright (c) 2024 Rockchip Electronics Co., Ltd.
+ *
+ * RK3506 AMP FIT source: Apache NuttX on CPU2 (replaces RT-Thread).
+ *
+ * - amp2  : NuttX firmware, loaded to 0x03e00000, run on CPU2 (mpidr 0xf02).
+ *           The NuttX RAM footprint is code(1MB @0x03e00000) + RAM(32MB
+ *           @0x03f00000) = 0x03e00000-0x05f00000 (33MB). The kernel dts
+ *           amp_reserved node MUST cover this whole range (no-map), see
+ *           kernel-6.1/.../rk3506b-luckfox-lyra-amp-spinand.dts.
+ * - linux : brought up by U-Boot on CPU0, entry 0x00900000.
+ *
+ * The "compile" block tells device/rockchip/common/scripts/mk-amp.sh how to
+ * build the firmware (sys = "nuttx" -> build_nuttx()). No RSA signature, hash
+ * only, so U-Boot verifies the sha256 of the loadable.
+ */
+
+/dts-v1/;
+/ {
+	description = "FIT source file for rockchip AMP (NuttX on CPU2)";
+	#address-cells = <1>;
+
+	images {
+		amp2 {
+			description  = "nuttx-core2";
+			data         = /incbin/("nuttx.bin");
+			type         = "firmware";
+			compression  = "none";
+			arch         = "arm";	 // "arm64" or "arm"
+			cpu          = <0xf02>;  // mpidr
+			thumb        = <0>;      // 0: arm or thumb2; 1: thumb
+			hyp          = <0>;      // 0: el1/svc; 1: el2/hyp
+			load         = <0x03e00000>;
+			srambase     = <0xfff80000>;
+			sramsize     = <0x0000c000>;
+			compile {
+				size       = <0x02100000>; // 33MB: code(1MB)+RAM(32MB)
+				sys        = "nuttx";
+				core       = "ap";
+				nuttx_config = "luckfox-lyra-amp:nsh";
+			};
+			udelay       = <10000>;
+			hash {
+				algo = "sha256";
+			};
+		};
+	};
+
+	share {
+		rpmsg_base       = <0x03c00000>;
+		rpmsg_size       = <0x00200000>;
+	};
+
+	configurations {
+		default = "conf";
+		conf {
+			description = "Rockchip AMP images";
+			rollback-index = <0x0>;
+			loadables = "amp2";
+
+			/* - run linux on cpu0
+			 * - it is brought up by amp(that run on U-Boot)
+			 * - its boot entry depends on U-Boot
+			 */
+			linux {
+				description  = "linux-os";
+				arch         = "arm";
+				cpu          = <0xf00>;
+				thumb        = <0>;
+				hyp          = <0>;
+				load         = <0x00900000>;
+				udelay       = <0>;
+			};
+		};
+	};
+};

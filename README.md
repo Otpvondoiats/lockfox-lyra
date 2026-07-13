@@ -9,12 +9,11 @@ Luckfox Lyra 系列主控采用 Rockchip RK3506G2/RK3506B 处理器，该处理�
 
 # 构建
 
-
-git clone <repo> && cd lockfox-lyra
-git submodule update --init nuttxos/nuttx nuttxos/nuttx-apps
-( cd nuttxos/nuttx && git am ../patches/*.patch )   # 手动打 NuttX patch
-./tools/restore-dl-splits.sh                         # 还原被分卷的 dl(sha256 校验)
-./build.sh rk3506b_buildroot_spinand_amp_nuttx_defconfig
-./build.sh                                           # 大小核 image 一起出
+git clone <repo> && cd lockfox-lyra  
+git submodule update --init nuttxos/nuttx nuttxos/nuttx-apps  
+( cd nuttxos/nuttx && git am ../patches/*.patch )   # 手动打 NuttX patch  
+./tools/restore-dl-splits.sh                         # 还原被分卷的 dl(sha256 校验)  
+./build.sh rk3506b_buildroot_spinand_amp_nuttx_defconfig  
+./build.sh                                           # 大小核 image 一起出  
 
 

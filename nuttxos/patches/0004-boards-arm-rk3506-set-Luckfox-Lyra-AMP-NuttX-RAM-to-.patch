@@ -1,0 +1,29 @@
+From b4a89f24390b61c773ba2ec966bf74bf5c98f93b Mon Sep 17 00:00:00 2001
+From: likun17 <likun17@xiaomi.com>
+Date: Mon, 13 Jul 2026 16:49:15 +0800
+Subject: [PATCH 4/4] boards/arm/rk3506: set Luckfox Lyra AMP NuttX RAM to 32MB
+
+CONFIG_RAM_SIZE 0x02000000 (32MB), RAM_START 0x03f00000. Total NuttX
+footprint 0x03e00000-0x05f00000 (33MB); the Linux kernel dts amp_reserved
+node reserves this whole range (no-map). Hard ceiling is 193MB, bounded by
+the 256MB DDR window mapped in the rk3506 MMU setup.
+---
+ boards/arm/rk3506/luckfox-lyra-amp/configs/nsh/defconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/boards/arm/rk3506/luckfox-lyra-amp/configs/nsh/defconfig b/boards/arm/rk3506/luckfox-lyra-amp/configs/nsh/defconfig
+index 3f0be42dd1..27911630e2 100644
+--- a/boards/arm/rk3506/luckfox-lyra-amp/configs/nsh/defconfig
++++ b/boards/arm/rk3506/luckfox-lyra-amp/configs/nsh/defconfig
+@@ -46,7 +46,7 @@ CONFIG_INIT_ENTRYPOINT="nsh_main"
+ CONFIG_NSH_BUILTIN_APPS=y
+ CONFIG_NSH_FILEIOSIZE=512
+ CONFIG_NSH_READLINE=y
+-CONFIG_RAM_SIZE=15728640
++CONFIG_RAM_SIZE=33554432
+ CONFIG_RAM_START=0x03f00000
+ CONFIG_RAM_VSTART=0x03f00000
+ CONFIG_RAW_BINARY=y
+-- 
+2.34.1
+

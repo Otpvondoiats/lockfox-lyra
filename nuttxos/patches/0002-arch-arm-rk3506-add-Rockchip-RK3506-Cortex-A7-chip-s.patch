@@ -1,0 +1,1375 @@
+From 0346880b335f6044f909b6a3281139e52ca4e2fe Mon Sep 17 00:00:00 2001
+From: likun17 <likun17@xiaomi.com>
+Date: Thu, 25 Jun 2026 16:14:06 +0800
+Subject: [PATCH 2/4] arch/arm/rk3506: add Rockchip RK3506 (Cortex-A7) chip
+ support
+
+Add the RK3506 architecture support for running NuttX as an AMP
+secondary subsystem on one Cortex-A7 core (CPU2), brought up by U-Boot
+via PSCI alongside Linux on the other cores.
+
+Key points specific to the AMP-shared-GIC environment:
+
+ - up_irqinitialize() only initializes the GIC CPU interface (GICC) and
+   disables all SPIs, because the GIC distributor (GICD) is owned by
+   Linux. Leftover SPIs targeting CPU2 would otherwise storm the core
+   right after up_irq_enable().
+ - The generic timer uses the per-CPU PTM path (select ARMV7A_HAVE_PTM),
+   since the per-CPU PPI is private and unaffected by Linux reconfiguring
+   the shared distributor.
+ - Memory map covers DDR (normal) and the 0xff000000 device region; the
+   image runs from the AMP-reserved DRAM window.
+ - rk3506_boot.c includes a raw UART4 breadcrumb for early bring-up
+   debugging, independent of the serial driver.
+
+Signed-off-by: likun17 <likun17@xiaomi.com>
+---
+ arch/arm/Kconfig                              |  18 ++
+ arch/arm/include/rk3506/chip.h                |  48 +++++
+ arch/arm/include/rk3506/irq.h                 |  71 +++++++
+ arch/arm/src/rk3506/CMakeLists.txt            |  37 ++++
+ arch/arm/src/rk3506/Kconfig                   |  37 ++++
+ arch/arm/src/rk3506/Make.defs                 |  36 ++++
+ arch/arm/src/rk3506/chip.h                    | 129 ++++++++++++
+ .../src/rk3506/hardware/rk3506_memorymap.h    |  67 ++++++
+ arch/arm/src/rk3506/rk3506_boot.c             | 165 +++++++++++++++
+ arch/arm/src/rk3506/rk3506_irq.c              | 195 ++++++++++++++++++
+ arch/arm/src/rk3506/rk3506_irq.h              |  53 +++++
+ arch/arm/src/rk3506/rk3506_memorymap.c        |  73 +++++++
+ arch/arm/src/rk3506/rk3506_memorymap.h        |  84 ++++++++
+ arch/arm/src/rk3506/rk3506_pgalloc.c          |  78 +++++++
+ arch/arm/src/rk3506/rk3506_serial.c           |  69 +++++++
+ arch/arm/src/rk3506/rk3506_timer.c            |  38 ++++
+ 16 files changed, 1198 insertions(+)
+ create mode 100644 arch/arm/include/rk3506/chip.h
+ create mode 100644 arch/arm/include/rk3506/irq.h
+ create mode 100644 arch/arm/src/rk3506/CMakeLists.txt
+ create mode 100644 arch/arm/src/rk3506/Kconfig
+ create mode 100644 arch/arm/src/rk3506/Make.defs
+ create mode 100644 arch/arm/src/rk3506/chip.h
+ create mode 100644 arch/arm/src/rk3506/hardware/rk3506_memorymap.h
+ create mode 100644 arch/arm/src/rk3506/rk3506_boot.c
+ create mode 100644 arch/arm/src/rk3506/rk3506_irq.c
+ create mode 100644 arch/arm/src/rk3506/rk3506_irq.h
+ create mode 100644 arch/arm/src/rk3506/rk3506_memorymap.c
+ create mode 100644 arch/arm/src/rk3506/rk3506_memorymap.h
+ create mode 100644 arch/arm/src/rk3506/rk3506_pgalloc.c
+ create mode 100644 arch/arm/src/rk3506/rk3506_serial.c
+ create mode 100644 arch/arm/src/rk3506/rk3506_timer.c
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index b107f0ab91..7664cfbd39 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -885,6 +885,20 @@ config ARCH_CHIP_QEMU_ARM
+ 	---help---
+ 		QEMU virt platform (ARMv7a)
+ 
++config ARCH_CHIP_RK3506
++	bool "Rockchip RK3506 (ARMv7a, Cortex-A7)"
++	select ARCH_CORTEXA7
++	select ARCH_HAVE_MULTICPU
++	select ARMV7A_HAVE_GICv2
++	select ARMV7A_HAVE_PTM
++	select ARCH_HAVE_LOWVECTORS
++	select ARCH_HAVE_ADDRENV
++	select ARCH_NEED_ADDRENV_MAPPING
++	---help---
++		Rockchip RK3506 SoC. NuttX runs as an AMP subsystem on one of the
++		Cortex-A7 cores (CPU2), alongside Linux on the other cores. Brought
++		up by U-Boot via PSCI.
++
+ config ARCH_CHIP_GOLDFISH_ARM
+ 	bool "GOLDFISH virt platform (ARMv7a)"
+ 	select ARCH_HAVE_POWEROFF
+@@ -1366,6 +1380,7 @@ config ARCH_CHIP
+ 	default "phy62xx"	if ARCH_CHIP_PHY62XX
+ 	default "tlsr82"	if ARCH_CHIP_TLSR82
+ 	default "qemu"		if ARCH_CHIP_QEMU_ARM
++	default "rk3506"	if ARCH_CHIP_RK3506
+ 	default "mps"		if ARCH_CHIP_MPS
+ 	default "rtl8721dx"	if ARCH_CHIP_RTL8721DX
+ 	default "rtl8720f"	if ARCH_CHIP_RTL8720F
+@@ -1935,6 +1950,9 @@ endif
+ if ARCH_CHIP_QEMU_ARM
+ source "arch/arm/src/qemu/Kconfig"
+ endif
++if ARCH_CHIP_RK3506
++source "arch/arm/src/rk3506/Kconfig"
++endif
+ if ARCH_CHIP_MPS
+ source "arch/arm/src/mps/Kconfig"
+ endif
+diff --git a/arch/arm/include/rk3506/chip.h b/arch/arm/include/rk3506/chip.h
+new file mode 100644
+index 0000000000..31cbb8fc87
+--- /dev/null
++++ b/arch/arm/include/rk3506/chip.h
+@@ -0,0 +1,48 @@
++/****************************************************************************
++ * arch/arm/include/rk3506/chip.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++#ifndef __ARCH_ARM_INCLUDE_RK3506_CHIP_H
++#define __ARCH_ARM_INCLUDE_RK3506_CHIP_H
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++
++/****************************************************************************
++ * Pre-processor Prototypes
++ ****************************************************************************/
++
++/****************************************************************************
++ * Public Types
++ ****************************************************************************/
++
++/****************************************************************************
++ * Public Data
++ ****************************************************************************/
++
++/****************************************************************************
++ * Public Functions Prototypes
++ ****************************************************************************/
++
++#endif /* __ARCH_ARM_INCLUDE_RK3506_CHIP_H */
+diff --git a/arch/arm/include/rk3506/irq.h b/arch/arm/include/rk3506/irq.h
+new file mode 100644
+index 0000000000..18db3d440a
+--- /dev/null
++++ b/arch/arm/include/rk3506/irq.h
+@@ -0,0 +1,71 @@
++/****************************************************************************
++ * arch/arm/include/rk3506/irq.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/* This file should never be included directly but, rather,
++ * only indirectly through nuttx/irq.h
++ */
++
++#ifndef __ARCH_ARM_INCLUDE_RK3506_IRQ_H
++#define __ARCH_ARM_INCLUDE_RK3506_IRQ_H
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++/****************************************************************************
++ * Pre-processor Prototypes
++ ****************************************************************************/
++
++#define NR_IRQS                 220  /* Total number of interrupts */
++
++/****************************************************************************
++ * Public Types
++ ****************************************************************************/
++
++/****************************************************************************
++ * Inline functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Public Data
++ ****************************************************************************/
++
++/****************************************************************************
++ * Public Function Prototypes
++ ****************************************************************************/
++
++#ifndef __ASSEMBLY__
++#ifdef __cplusplus
++#define EXTERN extern "C"
++extern "C"
++{
++#else
++#define EXTERN extern
++#endif
++
++#undef EXTERN
++#ifdef __cplusplus
++}
++#endif
++#endif
++
++#endif /* __ARCH_ARM_INCLUDE_RK3506_IRQ_H */
+diff --git a/arch/arm/src/rk3506/CMakeLists.txt b/arch/arm/src/rk3506/CMakeLists.txt
+new file mode 100644
+index 0000000000..0a3b07cb18
+--- /dev/null
++++ b/arch/arm/src/rk3506/CMakeLists.txt
+@@ -0,0 +1,37 @@
++# ##############################################################################
++# arch/arm/src/qemu/CMakeLists.txt
++#
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed to the Apache Software Foundation (ASF) under one or more contributor
++# license agreements.  See the NOTICE file distributed with this work for
++# additional information regarding copyright ownership.  The ASF licenses this
++# file to you under the Apache License, Version 2.0 (the "License"); you may not
++# use this file except in compliance with the License.  You may obtain a copy of
++# the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++# License for the specific language governing permissions and limitations under
++# the License.
++#
++# ##############################################################################
++
++set(SRCS rk3506_boot.c rk3506_serial.c rk3506_irq.c rk3506_timer.c)
++
++if(CONFIG_ARCH_ARMV7A)
++  list(APPEND SRCS rk3506_pgalloc.c rk3506_memorymap.c)
++endif()
++
++if(CONFIG_BUILD_KERNEL)
++  list(APPEND SRCS rk3506_pgalloc.c)
++endif()
++
++if(CONFIG_BUILD_PROTECTED)
++  list(APPEND SRCS qemu_userspace.c qemu_allocateheap.c)
++endif()
++
++target_sources(arch PRIVATE ${SRCS})
+diff --git a/arch/arm/src/rk3506/Kconfig b/arch/arm/src/rk3506/Kconfig
+new file mode 100644
+index 0000000000..3fe578a87d
+--- /dev/null
++++ b/arch/arm/src/rk3506/Kconfig
+@@ -0,0 +1,37 @@
++#
++# For a description of the syntax of this configuration file,
++# see the file kconfig-language.txt in the NuttX tools repository.
++#
++
++if ARCH_CHIP_RK3506
++
++menu "RK3506 Chip Selection"
++
++config RK3506_AMP_SECONDARY
++	bool "Run as AMP secondary core (do not init GIC distributor)"
++	default y
++	---help---
++		When NuttX runs as an AMP subsystem alongside Linux on the same
++		SoC, the GIC distributor is owned/initialized by the Linux side.
++		This option makes NuttX initialize only its own GIC CPU interface
++		(GICC) and skip the distributor (GICD) initialization, so it does
++		not corrupt the configuration set up by Linux.
++
++config RK3506_UART4
++	bool "UART4 (dw-apb-uart) console"
++	default y
++	---help---
++		RK3506 UART4 at 0xff0e0000, used as the NuttX console in the
++		default AMP configuration. Pins routed to CPU2 by the Linux
++		device tree.
++
++config RK3506_UART3
++	bool "UART3 (dw-apb-uart)"
++	default n
++	---help---
++		RK3506 UART3 at 0xff0d0000, the secondary UART also routed to
++		CPU2 by the Linux device tree.
++
++endmenu # "RK3506 Chip Selection"
++
++endif # ARCH_CHIP_RK3506
+diff --git a/arch/arm/src/rk3506/Make.defs b/arch/arm/src/rk3506/Make.defs
+new file mode 100644
+index 0000000000..8107b89b52
+--- /dev/null
++++ b/arch/arm/src/rk3506/Make.defs
+@@ -0,0 +1,36 @@
++############################################################################
++# arch/arm/src/qemu/Make.defs
++#
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed to the Apache Software Foundation (ASF) under one or more
++# contributor license agreements.  See the NOTICE file distributed with
++# this work for additional information regarding copyright ownership.  The
++# ASF licenses this file to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance with the
++# License.  You may obtain a copy of the License at
++#
++#   http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++# License for the specific language governing permissions and limitations
++# under the License.
++#
++############################################################################
++
++ifeq ($(CONFIG_ARCH_ARMV7A),y)
++include armv7-a/Make.defs
++endif
++
++ifeq ($(CONFIG_ARCH_ARMV7R),y)
++include armv7-r/Make.defs
++endif
++
++# rk3506-specific C source files
++CHIP_CSRCS  = rk3506_boot.c rk3506_serial.c rk3506_irq.c rk3506_timer.c
++
++ifeq ($(CONFIG_ARCH_ARMV7A),y)
++CHIP_CSRCS += rk3506_pgalloc.c rk3506_memorymap.c
++endif
+diff --git a/arch/arm/src/rk3506/chip.h b/arch/arm/src/rk3506/chip.h
+new file mode 100644
+index 0000000000..14e71005cb
+--- /dev/null
++++ b/arch/arm/src/rk3506/chip.h
+@@ -0,0 +1,129 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/chip.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++#ifndef __ARCH_ARM_SRC_RK3506_CHIP_H
++#define __ARCH_ARM_SRC_RK3506_CHIP_H
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++
++#include "hardware/rk3506_memorymap.h"
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++/* RK3506 GIC-400 (GICv2):
++ *   GICD (distributor)   @ 0xff581000
++ *   GICC (CPU interface) @ 0xff582000
++ * so ICC offset from the distributor base is 0x1000.
++ */
++
++#define RK3506_SPI_IRQ_BASE   32
++#define CHIP_MPCORE_VBASE     0xff581000
++#define MPCORE_ICD_OFFSET     0x00000000
++#define MPCORE_ICC_OFFSET     0x00001000
++
++#define PGTABLE_SIZE          0x00004000
++#define PGTABLE_BASE_PADDR    (CONFIG_RAM_START + CONFIG_RAM_SIZE - PGTABLE_SIZE * CONFIG_SMP_NCPUS)
++#define PGTABLE_BASE_VADDR    (CONFIG_RAM_START + CONFIG_RAM_SIZE - PGTABLE_SIZE * CONFIG_SMP_NCPUS)
++
++#undef CONFIG_RAM_END
++#define CONFIG_RAM_END        PGTABLE_BASE_PADDR
++
++#define NUTTX_TEXT_VADDR      (CONFIG_FLASH_VSTART & 0xfff00000)
++#define NUTTX_TEXT_PADDR      (CONFIG_FLASH_VSTART & 0xfff00000)
++#define NUTTX_TEXT_PEND       ((CONFIG_FLASH_END + 0x000fffff) & 0xfff00000)
++#define NUTTX_TEXT_SIZE       (NUTTX_TEXT_PEND - NUTTX_TEXT_PADDR)
++
++#define NUTTX_RAM_VADDR       (CONFIG_RAM_VSTART & 0xfff00000)
++#define NUTTX_RAM_PADDR       (CONFIG_RAM_START & 0xfff00000)
++#define NUTTX_RAM_PEND        ((CONFIG_RAM_END + 0x000fffff) & 0xfff00000)
++#define NUTTX_RAM_SIZE        (NUTTX_RAM_PEND - NUTTX_RAM_PADDR)
++
++/****************************************************************************
++ * Macro Definitions
++ ****************************************************************************/
++
++#ifdef __ASSEMBLY__
++
++/****************************************************************************
++ * Name: cpuindex
++ *
++ * Description:
++ *   Return an index identifying the current CPU.
++ *
++ ****************************************************************************/
++
++#if defined(CONFIG_SMP) && CONFIG_ARCH_INTERRUPTSTACK > 7
++  .macro  cpuindex, index
++  mrc  p15, 0, \index, c0, c0, 5  /* Read the MPIDR */
++  and  \index, \index, #3         /* Bits 0-1=CPU ID */
++  .endm
++#endif
++
++/****************************************************************************
++ * Name: setirqstack
++ *
++ * Description:
++ *   Set the current stack pointer to the  -"top" of the IRQ interrupt
++ *   stack for the current CPU.
++ *
++ ****************************************************************************/
++
++#if defined(CONFIG_SMP) && CONFIG_ARCH_INTERRUPTSTACK > 7
++  .macro  setirqstack, tmp1, tmp2
++  mrc  p15, 0, \tmp1, c0, c0, 5  /* tmp1=MPIDR */
++  and  \tmp1, \tmp1, #3          /* Bits 0-1=CPU ID */
++  ldr  \tmp2, =g_irqstack_top    /* tmp2=Array of IRQ stack pointers */
++  lsls \tmp1, \tmp1, #2          /* tmp1=Array byte offset */
++  add  \tmp2, \tmp2, \tmp1       /* tmp2=Offset address into array */
++  ldr  sp, [\tmp2, #0]           /* sp=Address in stack allocation */
++  .endm
++#endif
++
++/****************************************************************************
++ * Name: setfiqstack
++ *
++ * Description:
++ *   Set the current stack pointer to the  -"top" of the FIQ interrupt
++ *   stack for the current CPU.
++ *
++ ****************************************************************************/
++
++#if defined(CONFIG_SMP) && CONFIG_ARCH_INTERRUPTSTACK > 7
++  .macro  setfiqstack, tmp1, tmp2
++  mrc  p15, 0, \tmp1, c0, c0, 5  /* tmp1=MPIDR */
++  and  \tmp1, \tmp1, #3          /* Bits 0-1=CPU ID */
++  ldr  \tmp2, =g_fiqstack_top    /* tmp2=Array of FIQ stack pointers */
++  lsls \tmp1, \tmp1, #2          /* tmp1=Array byte offset */
++  add  \tmp2, \tmp2, \tmp1       /* tmp2=Offset address into array */
++  ldr  sp, [\tmp2, #0]           /* sp=Address in stack allocation */
++  .endm
++#endif
++
++#endif /* __ASSEMBLY__ */
++
++#endif /* __ARCH_ARM_SRC_RK3506_CHIP_H */
+diff --git a/arch/arm/src/rk3506/hardware/rk3506_memorymap.h b/arch/arm/src/rk3506/hardware/rk3506_memorymap.h
+new file mode 100644
+index 0000000000..6b56b3e48a
+--- /dev/null
++++ b/arch/arm/src/rk3506/hardware/rk3506_memorymap.h
+@@ -0,0 +1,67 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/hardware/rk3506_memorymap.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++#ifndef __ARCH_ARM_SRC_QEMU_HARDWARE_QEMU_MEMORYMAP_H
++#define __ARCH_ARM_SRC_QEMU_HARDWARE_QEMU_MEMORYMAP_H
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++#undef ARMV7A_PGTABLE_MAPPING /* We do not remap the page table */
++
++/* Check if the user has configured the page table address */
++
++#if !defined(PGTABLE_BASE_PADDR) || !defined(PGTABLE_BASE_VADDR)
++
++/* Sanity check.. if one is undefined, both should be undefined */
++
++#  if defined(PGTABLE_BASE_PADDR) || defined(PGTABLE_BASE_VADDR)
++#    error "Only one of PGTABLE_BASE_PADDR or PGTABLE_BASE_VADDR is defined"
++#  endif
++
++/* A sanity check, if the configuration says that the page table is read-only
++ * and pre-initialized (maybe ROM), then it should have also defined both of
++ * the page table base addresses.
++ */
++
++#  ifdef CONFIG_ARCH_ROMPGTABLE
++#    error "CONFIG_ARCH_ROMPGTABLE defined; PGTABLE_BASE_P/VADDR not defined"
++#  endif
++
++#define ARMV7A_PGTABLE_MAPPING 1
++
++#else /* !PGTABLE_BASE_PADDR || !PGTABLE_BASE_VADDR */
++
++/* Sanity check.. if one is defined, both should be defined */
++
++#  if !defined(PGTABLE_BASE_PADDR) || !defined(PGTABLE_BASE_VADDR)
++#    error "One of PGTABLE_BASE_PADDR or PGTABLE_BASE_VADDR is undefined"
++#  endif
++
++#endif /* !PGTABLE_BASE_PADDR || !PGTABLE_BASE_VADDR */
++
++#endif /* __ARCH_ARM_SRC_QEMU_HARDWARE_QEMU_MEMORYMAP_H */
+diff --git a/arch/arm/src/rk3506/rk3506_boot.c b/arch/arm/src/rk3506/rk3506_boot.c
+new file mode 100644
+index 0000000000..ea5565b15f
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_boot.c
+@@ -0,0 +1,165 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_boot.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++
++#include "arm_internal.h"
++
++#include "rk3506_irq.h"
++#include "rk3506_memorymap.h"
++#include "gic.h"
++
++#ifdef CONFIG_SCHED_INSTRUMENTATION
++#  include <sched/sched.h>
++#  include <nuttx/sched_note.h>
++#endif
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++/* RK3506 CRU: force UART4 source clock to the 24MHz crystal (XIN_OSC0).
++ *
++ * This mirrors what the Rockchip HAL does for RT-Thread, which is the proven
++ * configuration that yields a working 1.5Mbaud console on UART4.  NuttX does
++ * not otherwise touch the CRU, so without this the UART4 source clock would
++ * stay at the (lower) reset/U-Boot value and the 16550 divisor would produce
++ * the wrong baud rate.
++ *
++ *   CRU base                = 0xff9a0000
++ *   SCLK_UART4_SEL/_DIV     = CLKSEL_CON31 (offset 0x37c)
++ *     - mux  bits[15:13]: 0 = XIN_OSC0 (24MHz)
++ *     - div  bits[12:8] : 0 = divide by 1
++ *   Rockchip CRU registers use the upper 16 bits as a write-enable mask for
++ *   the corresponding lower 16 bits.  Writing 0xff000000 enables bits[15:8]
++ *   and clears them -> mux=0, div=0 -> UART4 source = 24MHz.
++ */
++
++#define RK3506_CRU_BASE          0xff9a0000
++#define RK3506_CRU_CLKSEL_CON31  (RK3506_CRU_BASE + 0x37c)
++#define RK3506_UART4_CLK_24M     0xff000000
++
++/* Raw UART4 (dw-apb 16550, reg-shift=2) breadcrumb for early boot.
++ * Proves arm_boot() runs and the UART hardware works, independent of
++ * the NuttX serial driver / OS init.  Register index << 2 (reg-shift=2).
++ */
++
++#define RK3506_UART4_BASE        0xff0e0000
++#define UART4_REG(idx) \
++        (*(volatile uint32_t *)(RK3506_UART4_BASE + ((idx) << 2)))
++#define UART4_RBR_THR_DLL        UART4_REG(0)  /* THR(w) / DLL(DLAB=1) */
++#define UART4_IER_DLM            UART4_REG(1)  /* IER / DLM(DLAB=1)    */
++#define UART4_FCR                UART4_REG(2)  /* FIFO control         */
++#define UART4_LCR                UART4_REG(3)  /* Line control         */
++#define UART4_LSR                UART4_REG(5)  /* Line status          */
++#define UART4_LSR_THRE           (1 << 5)      /* TX holding empty     */
++
++static void rk3506_rawuart_init(void)
++{
++  /* 24MHz / (16 * 1) = 1.5Mbaud, matching the working RT-Thread config. */
++
++  UART4_LCR = 0x80;            /* DLAB=1 */
++  UART4_RBR_THR_DLL = 0x01;    /* DLL = 1 */
++  UART4_IER_DLM = 0x00;        /* DLM = 0 */
++  UART4_LCR = 0x03;            /* DLAB=0, 8N1 */
++  UART4_FCR = 0x07;            /* enable+clear FIFOs */
++}
++
++void rk3506_rawuart_puts(const char *s)
++{
++  while (*s)
++    {
++      while ((UART4_LSR & UART4_LSR_THRE) == 0);
++      UART4_RBR_THR_DLL = (uint32_t)*s++;
++    }
++}
++
++/* Debug marker: print a tag repeatedly so it survives the board-powered
++ * CH340 USB-serial re-enumeration window (2-3s) on every board reset.
++ */
++
++void rk3506_dbgmark(const char *tag)
++{
++  int i;
++
++  /* Re-assert the known-good 1.5Mbaud divisor before printing. By the time
++   * the OS reaches later init stages, the u16550 serial driver may have
++   * reconfigured UART4's divisor, which would garble these raw markers.
++   */
++
++  rk3506_rawuart_init();
++
++  for (i = 0; i < 30; i++)
++    {
++      rk3506_rawuart_puts(tag);
++    }
++}
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Name: arm_boot
++ *
++ * Description:
++ *   Complete boot operations started in arm_head.S
++ *
++ ****************************************************************************/
++
++void arm_boot(void)
++{
++#ifdef CONFIG_ARCH_PERF_EVENTS
++  /* Perf init */
++
++  up_perf_init(0);
++#endif
++
++#ifdef CONFIG_ARCH_ARMV7A
++  /* Set the page table for section */
++
++  rk3506_setupmappings();
++#endif
++
++  arm_fpuconfig();
++
++  /* Force UART4 source clock to 24MHz before bringing up the console. */
++
++  putreg32(RK3506_UART4_CLK_24M, RK3506_CRU_CLKSEL_CON31);
++
++  /* Early boot breadcrumb (single line) before the serial driver comes up. */
++
++  rk3506_rawuart_init();
++  rk3506_rawuart_puts("\r\n[RK3506] NuttX arm_boot reached\r\n");
++
++#ifdef USE_EARLYSERIALINIT
++  /* Perform early serial initialization if we are going to use the serial
++   * driver.
++   */
++
++  arm_earlyserialinit();
++#endif
++}
+diff --git a/arch/arm/src/rk3506/rk3506_irq.c b/arch/arm/src/rk3506/rk3506_irq.c
+new file mode 100644
+index 0000000000..5706a71a11
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_irq.c
+@@ -0,0 +1,195 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_irq.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++#include <nuttx/arch.h>
++
++#include "arm_internal.h"
++#include "sctlr.h"
++#include "gic.h"
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++/* Size of the interrupt stack allocation */
++
++#define INTSTACK_ALLOC (CONFIG_SMP_NCPUS * INTSTACK_SIZE)
++
++/****************************************************************************
++ * Public Data
++ ****************************************************************************/
++
++#if defined(CONFIG_SMP) && CONFIG_ARCH_INTERRUPTSTACK > 7
++/* In the SMP configuration, we will need custom IRQ and FIQ stacks.
++ * These definitions provide the aligned stack allocations.
++ */
++
++static uint64_t g_irqstack_alloc[INTSTACK_ALLOC >> 3];
++static uint64_t g_fiqstack_alloc[INTSTACK_ALLOC >> 3];
++
++/* These are arrays that point to the top of each interrupt stack */
++
++uintptr_t g_irqstack_top[CONFIG_SMP_NCPUS] =
++{
++  (uintptr_t)g_irqstack_alloc + INTSTACK_SIZE,
++#if CONFIG_SMP_NCPUS > 1
++  (uintptr_t)g_irqstack_alloc + (2 * INTSTACK_SIZE),
++#endif
++#if CONFIG_SMP_NCPUS > 2
++  (uintptr_t)g_irqstack_alloc + (3 * INTSTACK_SIZE),
++#endif
++#if CONFIG_SMP_NCPUS > 3
++  (uintptr_t)g_irqstack_alloc + (4 * INTSTACK_SIZE)
++#endif
++};
++
++uintptr_t g_fiqstack_top[CONFIG_SMP_NCPUS] =
++{
++  (uintptr_t)g_fiqstack_alloc + INTSTACK_SIZE,
++#if CONFIG_SMP_NCPUS > 1
++  (uintptr_t)g_fiqstack_alloc + 2 * INTSTACK_SIZE,
++#endif
++#if CONFIG_SMP_NCPUS > 2
++  (uintptr_t)g_fiqstack_alloc + 3 * INTSTACK_SIZE,
++#endif
++#if CONFIG_SMP_NCPUS > 3
++  (uintptr_t)g_fiqstack_alloc + 4 * INTSTACK_SIZE
++#endif
++};
++
++#endif
++
++/* Symbols defined via the linker script */
++
++extern uint8_t _vector_start[]; /* Beginning of vector block */
++extern uint8_t _vector_end[];   /* End+1 of vector block */
++
++/* Raw UART4 debug breadcrumb helpers (defined in rk3506_boot.c). Used to
++ * localize where boot hangs, independent of the OS/serial driver. The
++ * marker prints repeatedly so it survives the CH340 USB re-enumeration
++ * window (board-powered adapter re-enumerates 2-3s on every reset).
++ */
++
++void rk3506_rawuart_puts(const char *s);
++void rk3506_dbgmark(const char *tag);
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Name: up_irqinitialize
++ *
++ * Description:
++ *   This function is called by up_initialize() during the bring-up of the
++ *   system.  It is the responsibility of this function to but the interrupt
++ *   subsystem into the working and ready state.
++ *
++ ****************************************************************************/
++
++void up_irqinitialize(void)
++{
++#ifdef CONFIG_RK3506_AMP_SECONDARY
++  int i;
++#endif
++
++#ifdef CONFIG_ARCH_LOWVECTORS
++  /* Set the VBAR register to the address of the vector table */
++
++  DEBUGASSERT((((uintptr_t)_vector_start) & ~VBAR_MASK) == 0);
++  cp15_wrvbar((uint32_t)_vector_start);
++#endif
++
++  /* The following operations need to be atomic, but since this function is
++   * called early in the initialization sequence, we expect to have exclusive
++   * access to the GIC.
++   */
++
++#ifdef CONFIG_RK3506_AMP_SECONDARY
++  /* AMP secondary core: the GIC distributor (GICD) is owned and already
++   * initialized by the Linux side running on the other cores. We must NOT
++   * call arm_gic0_initialize() here, otherwise we would reset the global
++   * distributor configuration and break Linux. Only initialize our own
++   * GIC CPU interface (GICC).
++   */
++
++  arm_gic_initialize();   /* CPU interface (GICC) only */
++
++  /* AMP coexistence fix (root cause of the early IRQ-storm crash):
++   *
++   * arm_gic_initialize() only disables this core's banked SGIs/PPIs
++   * (IRQ 0-31). Any SPI (IRQ >= 32) left enabled, pending, and targeting
++   * CPU2 in the shared distributor would be taken the instant we run
++   * up_irq_enable() below, vectoring into irq_unexpected_isr() (no handler)
++   * and producing a crash/garbage loop on UART4 (observed symptom).
++   *
++   * NuttX on CPU2 is brought up by U-Boot BEFORE Linux configures the GIC,
++   * so it is safe to clear the SPI enable bits here: Linux re-enables the
++   * SPIs it needs during its own GIC init later. This mirrors RT-Thread's
++   * arm_gic_dist_init(), proven to coexist with Linux on this SoC.
++   */
++
++  for (i = 32; i < NR_IRQS; i += 32)
++    {
++      putreg32(0xffffffff, GIC_ICDICER(i));  /* Clear-Enable: disable SPIs */
++    }
++#else
++  /* Initialize the Generic Interrupt Controller (GIC) for CPU0.
++   * In AMP mode, we want arm_gic0_initialize to be called only once.
++   */
++
++  if (sched_getcpu() == 0)
++    {
++      arm_gic0_initialize();  /* Initialization unique to CPU0 */
++    }
++
++  arm_gic_initialize();   /* Initialization common to all CPUs */
++#endif
++
++#ifndef CONFIG_SUPPRESS_INTERRUPTS
++  /* And finally, enable interrupts */
++
++  arm_color_intstack();
++  up_irq_enable();
++#endif
++}
++
++/****************************************************************************
++ * Name: up_get_intstackbase
++ *
++ * Description:
++ *   Return a pointer to the "alloc" the correct interrupt stack allocation
++ *   for the current CPU.
++ *
++ ****************************************************************************/
++
++#if defined(CONFIG_SMP) && CONFIG_ARCH_INTERRUPTSTACK > 7
++uintptr_t up_get_intstackbase(int cpu)
++{
++  return g_irqstack_top[cpu] - INTSTACK_SIZE;
++}
++#endif
+diff --git a/arch/arm/src/rk3506/rk3506_irq.h b/arch/arm/src/rk3506/rk3506_irq.h
+new file mode 100644
+index 0000000000..1350176262
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_irq.h
+@@ -0,0 +1,53 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_irq.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++#ifndef __ARCH_ARM_SRC_RK3506_RK3506_IRQ_H
++#define __ARCH_ARM_SRC_RK3506_RK3506_IRQ_H
++
++/****************************************************************************
++ * Public Function Prototypes
++ ****************************************************************************/
++
++#ifndef __ASSEMBLY__
++
++#undef EXTERN
++#if defined(__cplusplus)
++#define EXTERN extern "C"
++extern "C"
++{
++#else
++#define EXTERN extern
++#endif
++
++/****************************************************************************
++ * Name: arm_earlyirqinit
++ ****************************************************************************/
++
++void arm_earlyirqinit(void);
++
++#undef EXTERN
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* __ASSEMBLY__ */
++#endif /* __ARCH_ARM_SRC_RK3506_RK3506_IRQ_H */
+diff --git a/arch/arm/src/rk3506/rk3506_memorymap.c b/arch/arm/src/rk3506/rk3506_memorymap.c
+new file mode 100644
+index 0000000000..9638b368ae
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_memorymap.c
+@@ -0,0 +1,73 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_memorymap.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <sys/param.h>
++
++#include "mmu.h"
++
++#include "hardware/rk3506_memorymap.h"
++#include "rk3506_memorymap.h"
++
++/****************************************************************************
++ * Macro Definitions
++ ****************************************************************************/
++
++#define _NSECTIONS(b)                 (((b) + 0x000fffff) >> 20)
++
++/****************************************************************************
++ * Private Data
++ ****************************************************************************/
++
++static const struct section_mapping_s g_section_mapping[] =
++{
++  {
++    RK3506_DDR_PSECTION, RK3506_DDR_VSECTION,
++    MMU_MEMFLAGS, _NSECTIONS(RK3506_DDR_SECSIZE)
++  },
++  {
++    RK3506_DEVICE_PSECTION, RK3506_DEVICE_VSECTION,
++    MMU_IOFLAGS, _NSECTIONS(RK3506_DEVICE_SECSIZE)
++  },
++};
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Name: rk3506_setupmappings
++ *
++ * Description:
++ *   Initializes the non-code area page table
++ *
++ ****************************************************************************/
++
++int rk3506_setupmappings(void)
++{
++  mmu_l1_map_regions(g_section_mapping, nitems(g_section_mapping));
++
++  return 0;
++}
+diff --git a/arch/arm/src/rk3506/rk3506_memorymap.h b/arch/arm/src/rk3506/rk3506_memorymap.h
+new file mode 100644
+index 0000000000..b65a9bcaa8
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_memorymap.h
+@@ -0,0 +1,84 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_memorymap.h
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++#ifndef __ARCH_ARM_SRC_RK3506_RK3506_MEMORYMAP_H
++#define __ARCH_ARM_SRC_RK3506_RK3506_MEMORYMAP_H
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++#include <nuttx/compiler.h>
++#include <sys/types.h>
++#include <stdint.h>
++#include <stdbool.h>
++#include <arch/chip/chip.h>
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++/* RK3506 Physical Memory Map (for the NuttX AMP subsystem on CPU2) *********
++ *
++ * DDR:     0x00000000 - 0x10000000  (256MB window, normal memory)
++ *            - NuttX firmware loaded at 0x03e00000 (see amp_linux_mcu.its)
++ *            - rpmsg shared memory at 0x03c00000
++ * Device:  0xff000000 - 0xfff00000  (peripherals: UART 0xff0e0000,
++ *            GIC 0xff581000, etc, device memory)
++ */
++
++#define RK3506_DDR_PSECTION      0x00000000  /* 0x00000000-0x10000000 */
++#define RK3506_DEVICE_PSECTION   0xff000000  /* 0xff000000-0xfff00000 */
++
++#define RK3506_DDR_VSECTION      RK3506_DDR_PSECTION
++#define RK3506_DEVICE_VSECTION   RK3506_DEVICE_PSECTION
++
++/* Sizes of memory regions in bytes. */
++
++#define RK3506_DDR_SECSIZE       (256 * 1024 * 1024)
++#define RK3506_DEVICE_SECSIZE    (15 * 1024 * 1024)
++
++/****************************************************************************
++ * Public Function Prototypes
++ ****************************************************************************/
++
++#ifndef __ASSEMBLY__
++
++#undef EXTERN
++#if defined(__cplusplus)
++#define EXTERN extern "C"
++extern "C"
++{
++#else
++#define EXTERN extern
++#endif
++
++int rk3506_setupmappings(void);
++
++#undef EXTERN
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* __ASSEMBLY__ */
++#endif /* __ARCH_ARM_SRC_RK3506_RK3506_MEMORYMAP_H */
+diff --git a/arch/arm/src/rk3506/rk3506_pgalloc.c b/arch/arm/src/rk3506/rk3506_pgalloc.c
+new file mode 100644
+index 0000000000..9d6c7b855a
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_pgalloc.c
+@@ -0,0 +1,78 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_pgalloc.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/arch.h>
++#include <nuttx/config.h>
++
++#include <assert.h>
++#include <nuttx/debug.h>
++
++#ifdef CONFIG_MM_PGALLOC
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++/* Currently, page cache memory must be allocated in DRAM.  There are other
++ * possibilities, but the logic in this file will have to extended in order
++ * handle any other possibility.
++ */
++
++#ifndef CONFIG_ARCH_PGPOOL_MAPPING
++#  error CONFIG_ARCH_PGPOOL_MAPPING must be selected
++#endif
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Name: up_allocate_pgheap
++ *
++ * Description:
++ *   If there is a page allocator in the configuration, then this function
++ *   must be provided by the platform-specific code.  The OS initialization
++ *   logic will call this function early in the initialization sequence to
++ *   get the page heap information needed to configure the page allocator.
++ *
++ * Input parameters:
++ *   heap_start - A double pointer to the start address of the pgheap
++ *   heap_size - A pointer to the size of the pgheap
++ *
++ * Returned Value:
++ *   None
++ *
++ ****************************************************************************/
++
++void up_allocate_pgheap(void **heap_start, size_t *heap_size)
++{
++  DEBUGASSERT(heap_start && heap_size);
++
++  *heap_start = (void *)CONFIG_ARCH_PGPOOL_PBASE;
++  *heap_size  = (size_t)CONFIG_ARCH_PGPOOL_SIZE;
++}
++
++#endif /* CONFIG_MM_PGALLOC */
+diff --git a/arch/arm/src/rk3506/rk3506_serial.c b/arch/arm/src/rk3506/rk3506_serial.c
+new file mode 100644
+index 0000000000..69eb27fb16
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_serial.c
+@@ -0,0 +1,69 @@
++/***************************************************************************
++ * arch/arm/src/rk3506/rk3506_serial.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ***************************************************************************/
++
++/***************************************************************************
++ * Included Files
++ ***************************************************************************/
++
++#include <nuttx/config.h>
++
++#include <nuttx/serial/uart_16550.h>
++
++#include "arm_internal.h"
++
++#ifdef CONFIG_16550_UART
++
++/***************************************************************************
++ * Public Functions
++ ***************************************************************************/
++
++/***************************************************************************
++ * Name: arm_earlyserialinit
++ *
++ * Description:
++ *   see arm_internal.h
++ *
++ ***************************************************************************/
++
++void arm_earlyserialinit(void)
++{
++  /* Enable the console UART.  The other UARTs will be initialized if and
++   * when they are first opened.
++   */
++
++  u16550_earlyserialinit();
++}
++
++/***************************************************************************
++ * Name: arm_serialinit
++ *
++ * Description:
++ *   see arm_internal.h
++ *
++ ***************************************************************************/
++
++void arm_serialinit(void)
++{
++  u16550_serialinit();
++}
++
++#endif /* CONFIG_16550_UART */
+diff --git a/arch/arm/src/rk3506/rk3506_timer.c b/arch/arm/src/rk3506/rk3506_timer.c
+new file mode 100644
+index 0000000000..3453fc3da3
+--- /dev/null
++++ b/arch/arm/src/rk3506/rk3506_timer.c
+@@ -0,0 +1,38 @@
++/****************************************************************************
++ * arch/arm/src/rk3506/rk3506_timer.c
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.  The
++ * ASF licenses this file to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance with the
++ * License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
++ * License for the specific language governing permissions and limitations
++ * under the License.
++ *
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/timers/arch_alarm.h>
++
++#include "arm_timer.h"
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++void up_timer_initialize(void)
++{
++  up_alarm_set_lowerhalf(arm_timer_initialize(0));
++}
+-- 
+2.34.1
+

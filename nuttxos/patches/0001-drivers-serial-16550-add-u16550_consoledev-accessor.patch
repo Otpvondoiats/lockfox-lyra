@@ -1,0 +1,46 @@
+From e2a79a87c666d7789a5c9d40661aadf512cb963c Mon Sep 17 00:00:00 2001
+From: likun17 <likun17@xiaomi.com>
+Date: Thu, 25 Jun 2026 16:13:39 +0800
+Subject: [PATCH 1/4] drivers/serial/16550: add u16550_consoledev() accessor
+
+Expose a pointer to the console uart_dev_t so board logic can drive the
+console RX by polling. This is needed on AMP secondary cores where the
+UART RX interrupt cannot be delivered reliably through a GIC distributor
+that is shared with another OS (e.g. Linux), so the board polls the LSR
+and feeds bytes to the upper half via uart_recvchars().
+
+Signed-off-by: likun17 <likun17@xiaomi.com>
+---
+ drivers/serial/uart_16550.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/serial/uart_16550.c b/drivers/serial/uart_16550.c
+index 6278cab072..9f7c74c12b 100644
+--- a/drivers/serial/uart_16550.c
++++ b/drivers/serial/uart_16550.c
+@@ -1748,6 +1748,22 @@ void up_putc(int ch)
+ 
+   u16550_putc(priv, ch);
+ }
++
++/****************************************************************************
++ * Name: u16550_consoledev
++ *
++ * Description:
++ *   Return a pointer to the console uart_dev_t. Used by board logic that
++ *   needs to drive the console RX via polling (e.g. AMP secondary cores
++ *   where the UART RX interrupt cannot be delivered reliably through a GIC
++ *   distributor shared with another OS).
++ *
++ ****************************************************************************/
++
++FAR uart_dev_t *u16550_consoledev(void)
++{
++  return &CONSOLE_DEV;
++}
+ #endif
+ 
+ /****************************************************************************
+-- 
+2.34.1
+

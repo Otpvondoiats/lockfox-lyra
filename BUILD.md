@@ -89,12 +89,24 @@ GitHub 单文件上限 100MB。`buildroot/dl` 中超限的文件（当前仅
 
 ## 全新 clone 端到端验证记录（2026-07-13）
 
-在空目录里 `git clone` → 按上面流程走了一遍，发现并修复了 3 个可复现性问题：
+在空目录里 `git clone` → 按上面流程走了一遍，发现并修复了 4 个可复现性问题，
+最终**完整构建出双核 image 并验证通过**：
 
 | # | 现象 | 根因 | 修复 |
 |---|------|------|------|
 | 1 | `./build.sh <defconfig>` 报 `No available defconfigs` | 全新 clone 无 `device/rockchip/.chip` 符号链接（gitignore，首次选型时才建），`switch_defconfig` 进不去 | 文档/脚本改用 `./build.sh chip:rk3506:<defconfig>`（先建 `.chip` 再选） |
 | 2 | rootfs 构建失败：`ifupdown-scripts/network` 目录缺失 | 见 #3 | 随 #3 一并修复 |
-| 3 | **根因**：根 `.gitignore` 的 `*.d` / `*.cmd` / `*.ko` 全局规则误伤 buildroot **源码**（`if-up.d`/`init.d`/`rules.d`/`weston.ini.d` 等 77 个文件，含关键的 `package/initscripts/init.d/rcS`、`rcK`），import 时就没进 git | `git add -f` 强制纳入这 77 个文件（已跟踪文件不再受 gitignore 影响；未改宽泛规则以免误收构建产物） |
+| 3 | 根 `.gitignore` 的 `*.d` / `*.cmd` / `*.ko` 全局规则误伤 buildroot **源码**（`if-up.d`/`init.d`/`rules.d`/`weston.ini.d` 等 77 个文件，含关键的 `package/initscripts/init.d/rcS`、`rcK`），import 时就没进 git | `git add -f` 强制纳入这 77 个文件（已跟踪文件不再受 gitignore 影响；未改宽泛规则以免误收构建产物） |
+| 4 | rootfs 构建失败：`rkadk_version.h:24: fatal error: version.h: No such file` | `app/rkadk` 是嵌套 git 仓库，`include/version.h` 由构建时 `git describe` 生成；SDK 导入主仓库时嵌套 `.git` 未带过来，clone 后无从生成 | 把生成好的 `version.h` 作为种子文件 vendored 进仓库（`git add -f`） |
 
-已验证通过的环节：clone / submodule init / `git am` 打 4 个 patch / dl 分卷还原（sha256 通过）/ u-boot 构建 / kernel 构建（33MB 保留区 dtb 生效）。#3 修复后重新 clone 即可让 rootfs 阶段拿到完整源码。
+**最终验证结果**：修复 #1~#4 后，全新 clone 端到端跑通全部环节：
+clone / submodule init / `git am`（4 patch）/ dl 分卷还原（sha256 通过）/
+u-boot / kernel（33MB `amp_reserved` dtb 生效）/ rootfs（buildroot 离线）/
+**NuttX amp（`build_nuttx` 打包，`amp.img` 内含 `NuttShell (NSH) NuttX-13.0.0`）**。
+产物齐全：`output/firmware/` 下 `MiniLoaderAll.bin` / `uboot.img` / `boot.img` /
+`rootfs.img`(117MB) / `amp.img`(NuttX) / `parameter.txt` / `update.img`(128MB)。
+
+> 排错提示：`./build.sh 2>&1 | tee log | tail` 外层 `rc=0` 是 `tee` 的退出码，
+> **不代表构建成功**。判断成败看 `output/firmware/` 是否齐全，或 grep
+> `Failed to build` / `build_all succeeded`。另外改了 local 包（如 rkadk）的源码后，
+> 需删 `buildroot/output/*/build/<pkg>/` 强制重新 rsync，只删 `.stamp_built` 不够。
